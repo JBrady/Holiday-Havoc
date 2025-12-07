@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Holiday Havoc</title>
     <!-- Latest stable p5.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js" onerror="alert('Error loading p5.js. Check your internet connection.')"></script>
     <!-- Latest stable matter.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js" onerror="alert('Error loading matter.js. Check your internet connection.')"></script>
     <style>
         body {
             margin: 0;
@@ -17,13 +17,269 @@
             align-items: center;
             height: 100vh;
             background-color: #222;
+            color: #fff;
+            font-family: sans-serif;
+            flex-direction: column;
         }
         canvas {
             border: 2px solid #555;
+            display: none; /* Hidden until loaded */
+        }
+        #loading {
+            font-size: 24px;
         }
     </style>
 </head>
 <body>
-    <script src="game.js"></script>
+    <div id="loading">Loading Game...</div>
+
+    <script>
+        // Game Logic Inline
+        let Engine, World, Bodies, Mouse, MouseConstraint, Constraint, Composites, Events;
+        let engine, world;
+        let ground, bird, slingshot, mConstraint, stack;
+        let boxes = [];
+        let score = 0;
+        let isFired = false;
+        let pendingReset = false;
+
+        function setup() {
+            // Initialize Matter aliases inside setup to ensure library is loaded
+            // However, p5 'setup' runs after libraries are loaded.
+            // Using global window.Matter
+            if (typeof Matter === 'undefined') {
+                document.getElementById('loading').innerText = "Error: Matter.js failed to load.";
+                return;
+            }
+
+            const M = Matter;
+            Engine = M.Engine;
+            World = M.World;
+            Bodies = M.Bodies;
+            Mouse = M.Mouse;
+            MouseConstraint = M.MouseConstraint;
+            Constraint = M.Constraint;
+            Composites = M.Composites;
+            Events = M.Events;
+
+            const canvas = createCanvas(800, 400);
+
+            // Show canvas, hide loading
+            canvas.elt.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+
+            engine = Engine.create();
+            world = engine.world;
+
+            // Ground (Snow)
+            ground = Bodies.rectangle(400, 380, 810, 60, { isStatic: true, label: 'Ground' });
+            World.add(world, ground);
+
+            setupLevel();
+
+            // Mouse Setup
+            const mouse = Mouse.create(canvas.elt);
+            const options = {
+                mouse: mouse,
+                constraint: {
+                    stiffness: 0.2,
+                    render: { visible: false }
+                }
+            };
+            mConstraint = MouseConstraint.create(engine, options);
+            World.add(world, mConstraint);
+            mouse.pixelRatio = pixelDensity();
+
+            // Events
+            Events.on(mConstraint, 'enddrag', handleEndDrag);
+            Events.on(engine, 'collisionStart', handleCollisions);
+        }
+
+        function setupLevel() {
+            // Bird (Ornament)
+            if (bird) World.remove(world, bird);
+            bird = Bodies.circle(150, 200, 20, {
+                restitution: 0.5,
+                label: 'Bird',
+                density: 0.002
+            });
+            World.add(world, bird);
+
+            // Slingshot
+            if (slingshot) World.remove(world, slingshot);
+            slingshot = Constraint.create({
+                pointA: { x: 150, y: 200 },
+                bodyB: bird,
+                stiffness: 0.05,
+                length: 1
+            });
+            World.add(world, slingshot);
+
+            // Boxes (Gifts)
+            if (boxes.length === 0) {
+                const composite = Composites.stack(500, 150, 4, 3, 0, 0, function(x, y) {
+                    return Bodies.rectangle(x, y, 40, 40, { label: 'Box' });
+                });
+                boxes = composite.bodies;
+                World.add(world, composite);
+            }
+
+            isFired = false;
+            pendingReset = false;
+        }
+
+        function draw() {
+            background(20, 20, 50); // Night sky
+
+            if (!engine) return; // Wait for setup
+
+            Engine.update(engine);
+
+            // Draw Ground
+            noStroke();
+            fill(240);
+            drawBody(ground);
+
+            // Draw Boxes
+            for (let i = boxes.length - 1; i >= 0; i--) {
+                let box = boxes[i];
+                if (box.label === 'Destroyed') {
+                    World.remove(world, box);
+                    boxes.splice(i, 1);
+                    score += 100;
+                    continue;
+                }
+                drawBox(box);
+            }
+
+            // Draw Bird
+            drawBird(bird);
+
+            // Draw Slingshot
+            stroke(255);
+            strokeWeight(3);
+            if (slingshot.bodyB) {
+                const posA = slingshot.pointA;
+                const posB = slingshot.bodyB.position;
+                line(posA.x, posA.y, posB.x, posB.y);
+
+                if (isFired) {
+                    if (bird.position.x > 155) {
+                        slingshot.bodyB = null;
+                        setTimeout(() => { pendingReset = true; }, 1000);
+                    }
+                }
+            } else {
+                line(150, 200, 150, 230);
+            }
+
+            // Reset Logic
+            if (slingshot && !slingshot.bodyB && pendingReset) {
+                const speed = bird.speed;
+                const isOffScreen = bird.position.x > width + 50 || bird.position.x < -50;
+                const isStopped = speed < 0.2;
+
+                if (isOffScreen || isStopped) {
+                    if (boxes.length > 0) {
+                        setupLevel();
+                    }
+                }
+            }
+
+            // UI
+            noStroke();
+            fill(255, 215, 0);
+            textSize(24);
+            textAlign(LEFT);
+            text("Score: " + score, 20, 40);
+
+            if (boxes.length === 0) {
+                fill(255);
+                textSize(48);
+                textAlign(CENTER, CENTER);
+                text("HOLIDAY HAVOC!", width/2, height/2 - 50);
+                textSize(32);
+                text("All Presents Opened!", width/2, height/2 + 10);
+                text("Score: " + score, width/2, height/2 + 50);
+
+                textSize(20);
+                text("Click to Restart", width/2, height/2 + 100);
+            }
+        }
+
+        function mousePressed() {
+            if (boxes.length === 0) {
+                score = 0;
+                const composite = Composites.stack(500, 150, 4, 3, 0, 0, function(x, y) {
+                    return Bodies.rectangle(x, y, 40, 40, { label: 'Box' });
+                });
+                boxes = composite.bodies;
+                World.add(world, composite);
+                setupLevel();
+            }
+        }
+
+        function handleEndDrag(e) {
+            if (e.body === bird) {
+                isFired = true;
+            }
+        }
+
+        function handleCollisions(event) {
+            const pairs = event.pairs;
+            for (let pair of pairs) {
+                const bodyA = pair.bodyA;
+                const bodyB = pair.bodyB;
+                checkDestruction(bodyA, bodyB);
+                checkDestruction(bodyB, bodyA);
+            }
+        }
+
+        function checkDestruction(target, other) {
+            if (target.label === 'Box') {
+                const speed = Math.max(target.speed, other.speed);
+                if (speed > 3 || other.label === 'Bird') {
+                    target.label = 'Destroyed';
+                }
+            }
+        }
+
+        function drawBody(body) {
+            beginShape();
+            for (let v of body.vertices) {
+                vertex(v.x, v.y);
+            }
+            endShape(CLOSE);
+        }
+
+        function drawBox(body) {
+            push();
+            translate(body.position.x, body.position.y);
+            rotate(body.angle);
+            rectMode(CENTER);
+            noStroke();
+            fill(0, 150, 0);
+            rect(0, 0, 40, 40);
+            fill(255, 215, 0);
+            rect(0, 0, 40, 10);
+            rect(0, 0, 10, 40);
+            pop();
+        }
+
+        function drawBird(body) {
+            push();
+            translate(body.position.x, body.position.y);
+            rotate(body.angle);
+            noStroke();
+            fill(200, 0, 0);
+            ellipse(0, 0, 40, 40);
+            fill(255, 200);
+            ellipse(-10, -10, 10, 10);
+            fill(218, 165, 32);
+            rectMode(CENTER);
+            rect(0, -20, 10, 10);
+            pop();
+        }
+    </script>
 </body>
 </html>
